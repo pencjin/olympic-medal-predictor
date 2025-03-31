@@ -1,0 +1,565 @@
+---
+title: "Who's in it to Win it?"
+author: "Pen Jin"
+date: "`r Sys.Date()`"
+output:    
+      html_document:
+         toc: yes
+         toc_float: yes
+---
+
+
+```{r setup, include = FALSE}
+#load packages, read in your dataset if external to a package, 
+#and set global options. I have set all code chunks to not echo,
+#and to not print messages or warnings.  If you want to echo a particular code chunk to highlight something, you can do this individually for that code chunk.
+
+library(tidyverse)        #umbrella package
+library(tidymodels)       #modeling
+library(GGally)           #for scatterplot matrices
+library(skimr)
+library(dplyr)
+library(patchwork)
+
+knitr::opts_chunk$set( echo = FALSE,    
+                       message = FALSE,
+                       warning = FALSE)
+
+olympics <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2024/2024-08-06/olympics.csv')
+
+
+# Mutate experienced. If they have participated at least twice, they are experienced. 
+olympics <- olympics %>%
+  group_by(id) %>%
+  mutate(experienced = ifelse(n_distinct(year) == 2, "yes", "no")) %>%
+  ungroup()
+
+
+# Mutate total medals for each athlete in each Olympic event
+olympics <- olympics %>%
+  group_by(id, year) %>%  # Group by athlete and Olympic year
+  mutate(total_medals_athlete_olympics = sum(!is.na(medal))) %>%  # Count medals (non-NA values)
+  ungroup()
+
+# mutate city_noc most recent 10 Summer Olympics host countries (1980–2016)
+olympics <- olympics %>%
+  mutate(
+    city_noc = ifelse(year == 2000 & season == "Summer", "AUS",
+               ifelse(year == 2004 & season == "Summer", "GRE",
+               ifelse(year == 2008 & season == "Summer", "CHN",
+               ifelse(year == 2012 & season == "Summer", "GBR",
+               ifelse(year == 2016 & season == "Summer", "BRA",
+               ifelse(year == 1996 & season == "Summer", "USA",
+               ifelse(year == 1992 & season == "Summer", "ESP",
+               ifelse(year == 1988 & season == "Summer", "KOR",
+               ifelse(year == 1984 & season == "Summer", "USA",
+               ifelse(year == 1980 & season == "Summer", "URS", NA)))))))))))
+
+# Mutate host country variable
+olympics <- olympics %>%
+  mutate(
+    host_country = ifelse(noc == city_noc, "yes", "no"))
+ 
+# “Yes or no” if a country has been in the top 5 performing countries from Olympics 2000-2016. 
+top_5_by_year <- olympics %>%
+  filter(year >= 2000, !is.na(medal)) %>% group_by(year, noc) %>%
+  summarise(total_medals = n()) %>%
+  arrange(year, desc(total_medals)) %>%
+  group_by(year) %>%
+  mutate(rank = row_number()) %>%
+  filter(rank <= 5)
+
+top_5_frequency <- top_5_by_year %>% group_by(noc) %>% 
+summarise(top_5_count = n())
+
+olympics <- olympics %>%
+  mutate(top_5_ever = ifelse(noc == "AUS" | noc == "CAN" | noc == "CHN" |
+                             noc == "FIN" | noc == "GBR" | noc == "GER" |
+                             noc == "ITA" | noc == "NOR" | noc == "RUS" |
+                             noc == "SWE" | noc == "USA",
+                             "yes", "no"))
+
+# Total number of events a country participates in.
+olympics <- olympics %>% group_by(noc, year) %>%
+  mutate(total_events_country_year = n_distinct(event)) %>% ungroup()
+
+# Total number of athletes per country in a given olympic year. 
+olympics <- olympics %>% group_by(noc, year) %>% 
+  mutate(total_athletes_country_year = n_distinct(id)) %>% ungroup()
+
+# Preview the dataset with new variables mutated
+glimpse(olympics)
+
+# Split data into training and testing subsets
+set.seed(1414)
+
+olympics_filtered <- olympics %>%
+  filter(
+    !is.na(age) & 
+    !is.na(weight) & 
+    !is.na(height) & 
+    !is.na(total_medals_athlete_olympics) & 
+    !is.na(host_country)
+  ) %>%
+  distinct(id, year, .keep_all = TRUE)  
+
+olympics_split_filtered <- initial_split(olympics_filtered, prop = 0.5)
+olympics_train_filtered <- training(olympics_split_filtered)  # Filtered training dataset
+olympics_test_filtered <- testing(olympics_split_filtered)   # Filtered testing dataset
+
+```
+
+## Introduction
+The Olympics are an international sporting event that showcases the athletic abilities of individuals from all over the world. They are held every four years, with the Winter and Summer Olympics being held two years apart from each other. 
+
+Some of the questions that we are hoping to answer from this data set are: 
+
+Historically, which countries have the tendency to perform well in the Olympics? Using this, how can we predict an athlete’s performance in the next Olympics based on total medal count? 
+What correlations exist between weight, height, and age and the performance outcomes (medal win) of athletes across different sports?
+Is an athlete’s performance affected by whether their country is the host or not? 
+Does an athlete’s experience and age impact their performance (measured in total medal count per individual)?
+
+This dataset has been acquired from Kaggle. It introduces different individual athletes from the Olympic games in Athens 1896 to Rio in 2016. Information is tracked based on individual performance and information on each athlete, such as the country they represent or their height. https://www.kaggle.com/datasets/heesoo37/120-years-of-olympic-history-athletes-and-results/
+
+| Header          |  Description    | Header          |  Description
+|:---|:----------------- |:------|:----------------------------------
+| `id`             | Athlete ID   | `city`               | City of Olympic host
+| `name`           | Athlete Name | `sport`            | Sport of the Athlete
+| `sex`               | Athlete Sex | `event`        | Specific event the Athlete is participating in
+| `age`              | Athlete Age | `medal`      | Medal status of event (Gold, Silver, Bronze, NA)
+| `height`          | Athlete Height in cm | `experienced`| If athlete participated in multiple Olympics
+| `weight`  | Athlete weight in kg |`total _medal_athlete_olympics`  | Total medals per athlete per Olympics
+| `team`|Country/Team the Athlete is competing for|`city_noc`| Olympic host NOC (1980 -2016 Summer)
+| `noc`| NOC region of the Athlete|`host_country`|Athlete from the host NOC or not (1980 -2016 Summer)
+| `games`| Olympic game name|`top_5_ever`|Top 5 medal-earning Country or not (2000 - 2016) 
+| `year`| Year of Olympics |`total_events_country_year`|Number of events per NOC
+| `season`| Season of Olympics (winter or summer)|`total_athletes_country_year`|Number of athletes per NOC
+
+Model 1: age, weight, height, host_country vs. total_medal_athlete_olympics (1980-2016 Summer Olympics)
+Model 2: age, experienced, and total _medal_athlete_olympics. 
+Model 3: total_athletes_country_year, total_events_country_year, top_5_ever vs. total_medal_athlete_olympics
+
+## Section 2 - Model building
+
+### Section 2.1 - Model 1
+```{r counting host country status 1980 - 2016}
+olympics_filtered %>%
+  count(host_country)
+```
+
+
+```{r Pairwise Scatterplot Matrix, out.width='75%'}
+olympics_train_filtered %>%
+  select(age, weight, height, total_medals_athlete_olympics) %>%
+  ggpairs(title = "Olympics Medal Count Analysis")
+```
+
+The correlations between medal per athlete per event and age, weight, and height are -0.007, 0.038, and 0.045. All relationships above are weak. The strongest relationship is found between height and medal count per athlete per Olympic which is 0.045 which indicates a positive weak relationship.
+
+
+```{r Boxplot by Host Country, out.width='60%'}
+# Boxplot by host country status
+ggplot(data = olympics_train_filtered,
+       mapping = aes(x = host_country,
+                     y = total_medals_athlete_olympics)) +
+  geom_boxplot() +
+  labs(title = "Medals by Host Country Status",
+       x = "Host Country",
+       y = "Total Medals Per Athelete Per Olympics year")
+
+# Summary statistics by host country
+olympics_train_filtered %>%
+  group_by(host_country) %>%
+  summarise(mean_medals = mean(total_medals_athlete_olympics))
+```
+
+
+```{r fitting the models and calculating adj r^2}
+# Fit the models with single predictors
+model1a <- lm(total_medals_athlete_olympics ~ age, data = olympics_train_filtered)
+model1b <- lm(total_medals_athlete_olympics ~ height, data = olympics_train_filtered)
+model1c <- lm(total_medals_athlete_olympics ~ weight, data = olympics_train_filtered)
+
+# Calculate adjusted R^2
+model1a_rsq <- glance(model1a) %>% select(adj.r.squared) %>% pull()
+model1b_rsq <- glance(model1b) %>% select(adj.r.squared) %>% pull()
+model1c_rsq <- glance(model1c) %>% select(adj.r.squared) %>% pull()
+```
+
+| Model      | Adjusted R square  
+|:---        |:---------
+| `model1a-medal vs age`  | `r round(100 * model1a_rsq, 4)`% 
+| `model1b-medal vs height`  | `r round(100 * model1b_rsq, 4)`% 
+| `model1c-medal vs weight`  | `r round(100 * model1c_rsq, 4)`% 
+
+
+```{r main effects and interaction models}
+# Main effects model
+model2 <- lm(total_medals_athlete_olympics ~ age + height + weight + host_country, data = olympics_train_filtered)
+
+# Interaction effects model
+model3 <- lm(total_medals_athlete_olympics ~ age * host_country + height * host_country + weight * host_country, data = olympics_train_filtered)
+
+# Calculate adjusted R^2
+model2_rsq <- glance(model2) %>% select(adj.r.squared) %>% pull()
+model3_rsq <- glance(model3) %>% select(adj.r.squared) %>% pull()
+```
+
+| Model     | Adjusted R square  
+|:---       | :---------
+| `model2-main effects`  | `r round(100 * model2_rsq, 4)`% 
+| `model3-interaction effects`  | `r round(100 * model3_rsq, 4)`% 
+
+
+```{r Augment and RMSE}
+# Augment test data with predictions
+model1b_pred <- augment(model1b, newdata = olympics_test_filtered)
+model2_pred <- augment(model2, newdata = olympics_test_filtered)
+model3_pred <- augment(model3, newdata = olympics_test_filtered)
+
+# Calculate RMSE for each model
+model1b_rmse <- model1b_pred %>% rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+model2_rmse <- model2_pred %>% rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+model3_rmse <- model3_pred %>% rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+```
+
+| Model   | RMSE             
+|---------|------------------:
+| model1b-medal vs height | `r round(model1b_rmse, 4)` 
+| model2-main effects  | `r round(model2_rmse, 4)`  
+| model3-interaction effect  | `r round(model3_rmse, 4)`  
+
+It seems like model3 is the best model with highest rsq of 1.0602% among all models and rmse of 0.4573 which is lower than model1b(height vs medal counts) and model 2 (main effects model).
+
+
+
+```{r final model}
+# The final model which is the interaction effect model
+tidy(model3)
+```
+
+For Non-Host Countries:
+Total Medals per Athlete per Olympics Hat= −0.108 − 0.00039⋅age + 0.00159⋅height + 0.00034⋅weight
+
+For Host Countries:
+Total Medals Per Athlete Per Olympics Hat = (−0.108+0.754)+(−0.00039−0.0091)⋅age+(0.00159−0.00148)⋅height+(0.00034−0.00114)⋅weight
+                                          = 0.646 − 0.00949⋅age + 0.00011⋅height − 0.00080⋅weight
+
+Intercept:
+For non-host countries, the intercept is -0.108.
+For host countries, the intercept increases by 0.754, making it 0.646. This indicates that athletes from host countries are predicted to earn 0.754 more medals compared to non-host countries, holding all other variables constant.
+
+```{r Visualization, out.width='70%'}
+# Interaction Effects Visualization for Height
+p1 <- ggplot(data = olympics_filtered,
+       mapping = aes(x = height, 
+                     y = total_medals_athlete_olympics, 
+                     color = host_country)) +
+  geom_point() +
+  geom_abline(slope = 0.00159, intercept = -0.108, color = "blue") +  # Fitted line for non-host
+  geom_abline(slope = 0.00011, intercept = 0.646, color = "red") +  # Fitted line for host
+  labs(
+    title = "Blue line: Non-Host, Red line: Host",
+    x = "Height (cm)",
+    y = "Total Medals per Athlete per Olympics",
+    color = "Host Country"
+  )
+
+# Bubble Plot: Weight vs. Height
+p2<- ggplot(olympics_filtered, 
+       aes(x = weight, 
+           y = height, 
+           size = total_medals_athlete_olympics, 
+           color = age)) +
+  geom_point() +
+  labs(
+    title = "Bubble Plot: Weight vs. Height",
+    x = "Weight (kg)",
+    y = "Height (cm)",
+    size = "Total Medals",
+    color = "Age"
+  )
+
+p1 + p2
+```
+
+
+Conclusion with Data Insights:
+
+Host Country Effect: On average, athletes from host countries won 0.3651 medals per Olympics, while those from non-host countries won 0.1888 medals per Olympics, showing a significant host advantage.
+
+Age: Medal count decreases slightly with increasing age. For non-host countries, the model estimates a decrease of 0.00039 medals per additional year of age. For host countries, the decrease is slightly larger at 0.00949 medals per additional year. This suggests peak performance is generally achieved at younger ages.
+
+Height: Height positively influences medal count, but the effect is minimal. For non-host countries, an increase of 1 cm in height predicts an increase of 0.00159 medals. For host countries, the effect slightly decreases to 0.00011 medals per cm.
+
+Weight: Weight also shows a weak positive relationship with medal count. For non-host countries, each kg of weight predicts an increase of 0.00034 medals, while for host countries, the increase slightly decreases to 0.00080 medals per kg.
+
+Summary: While host country status is the most influential factor, the effects of age, weight, and height are minor. Athletes from host countries consistently outperform their non-host peers across all variables. This highlights the significant contextual advantage of competing as a host athlete. 
+
+
+### Section 2.2 - Model 2 
+
+```{r ExperiencePlot, , out.width='60%'}
+olympics_test_filtered %>%   
+             mutate(experienced = ifelse(experienced == 1, "yes", "no"))
+
+ggplot(olympics_test_filtered, aes(x = age, y = total_medals_athlete_olympics, color = experienced)) +
+  geom_point() +
+  facet_wrap(~ experienced) +
+  labs(title = "Age vs. Total Medals by Experience",
+       x = "Age",
+       y = "Total Medals") +
+  theme_minimal()
+```
+
+The scatter plot shows the relationship between age and total medals, separated by experience. The group with no experience ("no" in red) is mostly younger, and most have few or no medals, On the other hand, the experienced group ("yes" in blue) includes people of all ages, from teens to those in their 60s. This group generally has more medals, with several individuals earning between 2 and 8 medals. Although some younger experienced individuals have no medals, the trend shows that more experience is linked to earning more medals. There are some exceptions to this where a few outliers of younger inexperienced individuals having a high medal count exist. Overall, people with more experience tend to have a higher total number of medals.
+
+
+Next, we will build models off of the variables. 
+```{r models}
+
+model1a <- lm(total_medals_athlete_olympics ~ age, data = olympics_test_filtered)
+model1b <- lm(total_medals_athlete_olympics ~ experienced, data = olympics_test_filtered)
+
+model1a_rsq <- glance(model1a) %>% select(adj.r.squared) %>% pull()
+model1b_rsq <- glance(model1b) %>% select(adj.r.squared) %>% pull()
+
+cat("Model 1a Adjusted R-squared:", round(100 * model1a_rsq, 4), "%\n")
+cat("Model 1b Adjusted R-squared:", round(100 * model1b_rsq, 4), "%\n")
+
+model3 <- lm(total_medals_athlete_olympics ~ age * experienced, data = olympics_test_filtered)
+
+# Check the summary of the model
+summary(model3)
+
+# Calculate RMSE for each model (after augmenting the test data with predictions)
+
+# Model 1a predictions
+model1a_pred <- augment(model1a, newdata = olympics_test_filtered)
+model1a_rmse <- model1a_pred %>% rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+
+# Model 1b predictions
+model1b_pred <- augment(model1b, newdata = olympics_test_filtered)
+model1b_rmse <- model1b_pred %>% rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+
+# Model 3 predictions
+model3_pred <- augment(model3, newdata = olympics_test_filtered)
+model3_rmse <- model3_pred %>% rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+
+# Print RMSE values
+cat("RMSE for Model 1a (age):", round(model1a_rmse, 4), "\n")
+cat("RMSE for Model 1b (experience):", round(model1b_rmse, 4), "\n")
+cat("RMSE for Model 3 (main effects + interactions):", round(model3_rmse, 4), "\n")
+
+# Create a summary table
+summary_table <- tibble(
+  Model = c("Model 1a (age)", "Model 1b (experience)", "Model 3 (main effects + interaction)"),
+  `Adjusted R-squared (%)` = c(round(100 * model1a_rsq, 4), round(100 * model1b_rsq, 4), round(100 * glance(model3)$adj.r.squared, 4)),
+  RMSE = c(round(model1a_rmse, 4), round(model1b_rmse, 4), round(model3_rmse, 4))
+)
+
+print(summary_table)
+
+```
+
+Model 3 is the best model overall, as it has the lowest RMSE and the highest Adjusted R-squared. 
+
+```{r FinalModel}
+tidy(model3)
+```
+
+For non-experienced athletes:
+Total Medals = 0.2028 − 0.000278 × age
+
+For experienced athletes: 
+Total Medals = 0.3150 − 0.004228 × age
+
+
+Summary:
+
+Non-Experienced Athletes:
+The baseline predicted total_medals is 0.2028. For each year of age, the predicted total_medals decreases by 0.000278.
+
+Experienced Athletes:
+The baseline predicted total_medals for experienced athletes is higher (0.2028 + 0.1122 = 0.3150) compared to non-experienced athletes. The effect of age on total_medals is different for experienced athletes, as indicated by the significant interaction term.
+
+Data Insights:
+
+Experience:
+Experienced athletes are predicted to achieve higher medal counts compared to non-experienced athletes. Specifically, experienced athletes are estimated to win 0.1122 more medals per Olympics than non-experienced athletes, holding age constant. This indicates a significant advantage for athletes with Olympic experience, highlighting the positive impact of past competition on future success.
+
+Age:
+As age increases, total medal count generally decreases, but the effect is modest. For non-experienced athletes, the model predicts a decrease of 0.000278 medals per year of age. For experienced athletes, the effect of age on medal count is more pronounced, with a decrease of 0.00395 medals per year of age. This suggests that age impacts medal count more for experienced athletes than for non-experienced athletes. However, the negative relationship between age and total medals remains consistent, implying that younger athletes tend to have better chances at winning medals.
+
+
+Conclusion:
+
+The most significant factor influencing total medals is experience. Experienced athletes consistently outperform their non-experienced peers by 0.1122 medals per Olympics, indicating the importance of Olympic experience in predicting success. Age has a negative impact on total medals, with older athletes predicted to win fewer medals. This effect is more pronounced for experienced athletes (a decrease of 0.00395 medals per year of age), while for non-experienced athletes, the effect of age is smaller (0.000278). Overall, experience is the most influential factor in determining an athlete's total medals, while age has less significant effects. This reinforces the idea that Olympic experience provides a considerable advantage, but age has a minimal impact on medal success in this model.
+
+
+
+### Section 2.3 - Model 3
+This model examines how a country’s success and participation in the Olympics influence the number of medals earned by its athletes. By focusing on country-level factors such as the total number of athletes, number of events participated in, and whether the country is among the top 5 in medal earnings, this model seeks to explore the systemic factors that contribute to an athlete's success.
+
+```{r colored_connected_scatter, out.width='65%'}
+top_5_by_year <- top_5_by_year %>%
+  group_by(noc) %>% 
+  mutate(is_persistent = any(year != first(year)),
+         first_appearance = year == min(year))
+
+olympic_years <- seq(2000, 2016, by = 2)
+
+ggplot(data=top_5_by_year, mapping = aes(x = year, y = total_medals, color = noc)) +
+  geom_point(size = 4, alpha = 0.5) +
+  geom_line(aes(group = noc), data = top_5_by_year %>%
+              filter(is_persistent == TRUE), size = 1) +
+  geom_text(data = top_5_by_year %>% filter(first_appearance | !is_persistent),
+            aes(label = noc), size = 2.4, color = "black",
+            vjust = -0.1, hjust = -0.5, fontface = "bold") +
+  labs(title = "Top 5 Medal-Earning Countries Across Olympic Years",
+       x = "Olympic Year",
+       y = "Number of Medals in Year",
+       color = "Country (NOC)") +
+  scale_x_continuous(breaks = olympic_years) +
+  theme_minimal() + theme(legend.position = "right")
+
+```
+
+This color-connected scatter plot visualizes the performance of the top 5 competing countries in each Olympics from 2000 to 2016. By color-coding each country, the plot highlights how certain nations consistently remain at the top over time. This plot demonstrates the historical trend where some countries consistently score higher in total medal counts, offering a comparison of how a country's historical performance might influence the success of its athletes. 
+
+```{r  facet-wrap scatter plot, out.width='65%'}
+print(top_5_frequency)
+
+ggplot(olympics_test_filtered, aes(x = total_events_country_year, 
+                                   y = total_athletes_country_year)) +
+  geom_point(alpha = 0.7) + geom_smooth(method = "lm", se = TRUE) +
+  facet_wrap(~top_5_ever) +
+  labs(title = "Number of Events vs. Number of Athletes by Top 5 Ever",
+       x = "Total Events in Year",
+       y = "Total Athletes in Year")
+
+```
+
+The facet-wrap in the scatter plot allows for the visualization of relationships between the number of events and the number of athletes in different groups, categorized by whether a country is in the top 5 medal earners historically. The facet for top_5_ever = no shows most of its points clustered towards the bottom left, indicating that countries not historically in the top 5 medal earners tend to have lower numbers of events and athletes. This suggests these countries may have smaller delegations or participate in fewer events, which could limit their overall performance. In contrast, the facet for top_5_ever = yes displays points more evenly distributed along the line, implying that countries in the top 5 medal earners generally exhibit a more consistent or proportionate relationship between the number of athletes and events. These countries likely have larger delegations and participate in a broader range of events, which may contribute to their sustained success in the Olympics. Overall, this pattern suggests that top-performing countries have a stronger and more balanced connection between their athlete participation and event engagement, whereas non-top-performing countries tend to have fewer athletes and events, potentially limiting their chances of winning medals. 
+
+To further investigate the relationship, here are linear models of each explanatory variable:
+
+```{r predictions}
+
+lm_events_model <- lm(total_medals_athlete_olympics ~ total_events_country_year, 
+                      data = olympics_test_filtered)
+lm_athletes_model <- lm(total_medals_athlete_olympics ~ total_athletes_country_year, 
+                        data = olympics_test_filtered)
+lm_top5_model <- lm(total_medals_athlete_olympics ~ top_5_ever, 
+          data = olympics_test_filtered)
+lm_combined_model <- lm(total_medals_athlete_olympics ~ total_events_country_year + total_athletes_country_year + top_5_ever, data = olympics_test_filtered)
+```
+
+```{r rmse_2.3}
+
+model_event_rsq <- glance(lm_events_model) %>% select(adj.r.squared) %>% pull()
+model_athlete_rsq <- glance(lm_athletes_model) %>% select(adj.r.squared) %>% pull()
+model_top5_rsq <- glance(lm_top5_model) %>% select(adj.r.squared) %>% pull()
+model_combined_rsq <- glance(lm_combined_model) %>% select(adj.r.squared) %>% pull()
+
+modela_pred <- lm_events_model %>% augment(newdata = olympics_test_filtered) 
+modelb_pred <- lm_athletes_model %>% augment(newdata = olympics_test_filtered)
+modelc_pred <- lm_top5_model %>% augment(newdata = olympics_test_filtered)
+model_combined_pred <- lm_combined_model %>% augment(newdata = olympics_test_filtered)
+
+modela_rmse <- modela_pred %>%
+  rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+modelb_rmse <- modelb_pred %>%
+  rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+modelc_rmse <- modelc_pred %>%
+  rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>% pull(.estimate)
+model_combined_rmse <- model_combined_pred %>%
+  rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>%  pull(.estimate)
+
+```
+
+```{r models_2.3}
+
+tidy(lm_events_model)
+tidy(lm_athletes_model)
+tidy(lm_top5_model)
+tidy(lm_combined_model)
+
+```
+
+Equations:   
+
+Total Medals=0.0519+0.00219 * Total Events Country Year \    
+Total Medals=0.0604+0.00124 * Total Athletes Country Year \
+Total Medals=0.159+0.123 * Top 5 Ever \
+Total Medals=0.0638−0.000938 * Total Events Country Year+0.00188 * Total Athletes Country Year−0.0336 * Top 5 Ever
+
+| Model      | Adjusted R square  | RMSE             
+|:---        |:---------  |------------------:
+| modela-medal vs events     | `r round(100 * model_event_rsq, 3)`% | `r round(modela_rmse, 3)` 
+| modelb-medal vs athletes  | `r round(100 * model_athlete_rsq, 3)`% | `r round(modelb_rmse, 3)`  
+| modelc-medal vs top5  | `r round(100 * model_top5_rsq, 3)`% | `r round(modelc_rmse, 3)` 
+| modeld-medal vs combined  | `r round(100 * model_combined_rsq, 3)`% | `r round(model_combined_rmse, 3)`
+
+Based on statistical significance, adjusted rsq, and low RMSE score, the Combined Model is the best fit for this Model. It has the highest rsq percentage of 5.81% and an RMSE of 0.446. While single-variable models provide certain insights, the main effects ("combined") model better accounts for the multi-faceted factors influencing an athlete's medal performance.
+
+Interpreting the equation of Model D: \  
+Country in the Top 5 (Top 5 Ever = 0):   
+[Total_Medals_Athlete_Hat=0.0638−0.000938 * Total Events Country Year+0.00188 * Total Athletes Country Year−0.0336 * 0] 
+
+Country Not in the Top 5 (Top 5 Ever = 1):   
+[Total_Medals_Athlete_Hat=0.0638−0.000938 * Total Events Country Year+0.00188 * Total Athletes Country Year−0.0336 * 1]   
+
+Intercept: For both countries in and not in the top 5, if a country has 0 athletes, and 0 events being participated in, 0.0638 total medals per athlete are won. \  
+Slope: For an increase of one additional event participated by a country during an olympic year, the estimated total medals per athlete decreases by 0.000938. \  
+For an increase of one additional athlete added to a country's team, the amount of total medals per athlete increases by 0.00188. \
+If a country was in the top 5 historically, the total medals per athlete decreases by 0.0336. \
+
+Data Insights: \  
+Top 5 Ever Status: Countries historically in the top 5 tend to have lower total medals per athlete compared to countries outside the top 5. This suggests that historical success may come with higher competition, potentially spreading out the medal count across more athletes. \  
+
+Number of Athletes: The number of athletes from a noc has a positive effect on the total medals per athlete. This indicates that having more athletes in the Olympics correlates with a higher likelihood of winning more medals per athlete, likely due to the increased chances of success from a larger pool of competitors.\   
+
+Number of Events: The number of events a country participates in has a negative relationship with medals per athlete. This may indicate that as countries participate in more events, the distribution of medals may become more diluted, resulting in fewer medals per athlete overall.
+
+Summary: The factors influencing medal count of this model include the number of athletes per country, the number of events per country, and historical performance (Top 5 Ever status). Countries with a higher number of athletes perform better overall, while those in countries that have been top 5 tend to see fewer medals per athlete, possibly due to greater competition. The effect of the number of events suggests that increased competition from more events can dilute medal outcomes.
+
+
+## Section 3 - Results 
+
+Choice of best model: The model we have chosen for this section is 2.3 Eileen’s modeld-medal vs combined, which is the main effects + interaction. This model demonstrates the relationship between the total number of athletes participating for a country, the total number of events a country participates in, and the number of medals that an individual athlete has earned. We selected this model as the best model for our analysis because it has the highest adjusted rsq (5.81%) and the lowest rmse (0.446) , indicating the most reliable and accurate predictions of medals per athlete.  
+
+Equation if Country was in the Top 5: 
+Total_Medals_Athlete_Hat= 0.142−0.00126 * Total Events Country Year+0.00112 * Total Athletes Country Year + 0.0802  
+Equation if Country was not in the Top 5: 
+Total_Medals_Athlete_Hat= 0.142−0.00126 * Total Events Country Year+0.00112 * Total Athletes Country Year  
+
+Intercept: If a country has 0 total events and 0 total athletes in a given year and is not in the top 5 historically, the model predicts that the country will win approximately 0.142 medals per athlete per Olympics. \  
+
+Slope:  For each additional event held per country per year, the model predicts a decrease of 0.00126 medals per athlete per Olympics. \  
+For each additional athlete in a country per year, the model predicts an increase of 0.00112 medals per athlete per Olympics. 
+If a country is in the top 5 historically (Top 5 Ever = 1), the model predicts an increase of 0.0802 medals per athlete per Olympics compared to countries that are not in the top 5. \
+
+```{r conclusion}
+
+lm_combined_model <- lm(total_medals_athlete_olympics ~ total_events_country_year + total_athletes_country_year + top_5_ever, data = olympics)
+model_combined_rsq <- glance(lm_combined_model) %>% select(adj.r.squared) %>% pull()
+tidy(lm_combined_model)
+model_combined_pred <- lm_combined_model %>% augment(newdata = olympics)
+model_combined_rmse <- model_combined_pred %>%
+  rmse(truth = total_medals_athlete_olympics, estimate = .fitted) %>%  pull(.estimate)
+
+```
+| Final Model      | Adjusted R square  | RMSE             
+|:---        |:---------  |------------------:
+| modeld-medal vs combined  | `r round(100 * model_combined_rsq, 3)`% | `r round(model_combined_rmse, 3)`
+
+Conclusion with Data Insights:
+Our model shows that total events, total athletes, and historical top 5 status significantly influence an Athlete’s Olympic medal performance. The final model "modeld-medal vs combined" with an Adjusted R square of 4.189% and RMSE of 0.621 performs worse compared to the Olympics training data model, which has a higher Adjusted R square of 5.81% and a lower RMSE of 0.446. This is to be expected when dealing with a larger dataset, as larger datasets often introduce more complexity and variability, which can lead to a decrease in model performance.While the number of events negatively correlates with medals, suggesting that fewer events may lead to better focus and performance, the number of athletes has a positive relationship with medal count. This could mean that a larger team offers more opportunities for success. Historical top 5 status strongly predicts higher medal counts, emphasizing the role of established infrastructure and experience in guiding the success of an Athlete.  
+
+## Bibliography
+
+“Olympedia .” Www.olympedia.org, Sports Reference, www.olympedia.org/. Accessed May 2018.
+
+Moore, Andrew. “NC State Experts Weigh in on the Importance of the Olympics.” College of Natural Resources News, 2024, cnr.ncsu.edu/news/2024/08/why-the-olympics-are-important/.
+
