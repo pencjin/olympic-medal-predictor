@@ -67,6 +67,7 @@ library(bslib)
 **Pen Jin**  
 University of Washington  
 Double major in Anthropology & Informatics: Data Science  
+Data Engineer Intern at Refonte Learning
 GitHub: [pencjin](https://github.com/pencjin)  
 LinkedIn: [www.linkedin.com/in/peng-jin-74b53a231](https://www.linkedin.com/in/peng-jin-74b53a231)  
 Last updated: 2025-03-31
