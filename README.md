@@ -21,7 +21,7 @@ It also includes a Shiny dashboard that allows users to interactively test athle
 | File                  | Description |
 |-----------------------|-------------|
 | `Olympic Project.Rmd` | Full statistical analysis and model building |
-| `Olympic.html`        | Rendered version of the report |
+| `Olympic Report.html`        | Rendered version of the report |
 | `app.R`               | Shiny app that predicts Olympic medals |
 | `README.md`           | You're reading it 😄 |
 
