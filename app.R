@@ -7,7 +7,7 @@ library(DT)
 # Load and preprocess the Olympics dataset
 olympics <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2024/2024-08-06/olympics.csv')
 
-# Clean and engineer features
+# Feature engineering
 olympics <- olympics %>%
   filter(!is.na(age), !is.na(weight), !is.na(height), !is.na(medal)) %>%
   group_by(id, year) %>%
@@ -23,23 +23,29 @@ olympics <- olympics %>%
     year == 1996 & season == "Summer" ~ "USA",
     TRUE ~ NA_character_
   )) %>%
-  mutate(host_country = ifelse(noc == city_noc, "yes", "no"))
+  mutate(
+    host_country = ifelse(noc == city_noc, "yes", "no"),
+    top_5_ever = ifelse(noc %in% c("AUS", "CAN", "CHN", "FIN", "GBR", "GER", "ITA", "NOR", "RUS", "SWE", "USA"), 1, 0)
+  ) %>%
+  group_by(noc, year) %>%
+  mutate(
+    total_events_country_year = n_distinct(event),
+    total_athletes_country_year = n_distinct(id)
+  ) %>%
+  ungroup()
 
-# Fit the model
+# Models
 model3 <- lm(total_medals_athlete_olympics ~ age * host_country + height * host_country + weight * host_country, data = olympics)
-
-# Unique years and countries
-years <- sort(unique(olympics$year))
-countries <- sort(unique(olympics$noc))
+modeld <- lm(total_medals_athlete_olympics ~ total_events_country_year + total_athletes_country_year + top_5_ever, data = olympics)
 
 # UI
 ui <- fluidPage(
   titlePanel("Olympic Medal Predictor Platform"),
   tabsetPanel(
-    tabPanel("🎯 Medal Predictor",
+    tabPanel("🎯 Medal Predictor (Athlete)",
              sidebarLayout(
                sidebarPanel(
-                 selectInput("year", "Select Olympic Year:", choices = years, selected = 2016),
+                 selectInput("year", "Select Olympic Year:", choices = sort(unique(olympics$year)), selected = 2016),
                  numericInput("age", "Athlete Age:", value = 25),
                  numericInput("height", "Height (cm):", value = 175),
                  numericInput("weight", "Weight (kg):", value = 70),
@@ -48,7 +54,7 @@ ui <- fluidPage(
                  selectInput("var_x", "Plot Variable vs Medals:", choices = c("age", "height", "weight"))
                ),
                mainPanel(
-                 h4("Predicted Total Medals:"),
+                 h4("Predicted Total Medals (Athlete Model):"),
                  textOutput("prediction"),
                  h4("Model Formula"),
                  verbatimTextOutput("modelformula"),
@@ -60,12 +66,31 @@ ui <- fluidPage(
              )
     ),
     
+    tabPanel("📈 Medal Predictor (Country-level Final Model)",
+             sidebarLayout(
+               sidebarPanel(
+                 numericInput("events", "Total Events Country Participated:", value = 100),
+                 numericInput("athletes", "Total Athletes from Country:", value = 300),
+                 selectInput("top5", "Is Country Historically Top 5?:", choices = c("yes" = 1, "no" = 0))
+               ),
+               mainPanel(
+                 h4("Predicted Total Medals per Athlete (Final Model):"),
+                 textOutput("final_prediction"),
+                 h4("Model Explanation"),
+                 p("This model predicts the average medal count per athlete based on country-level factors. It includes total number of athletes, events participated in, and whether the country is historically top 5 (from 2000–2016)."),
+                 p("Equation: 0.142 − 0.00126 * Events + 0.00112 * Athletes + 0.0802 * Top5"),
+                 p("Summary: The factors influencing medal count of this model include the number of athletes per country, the number of events per country, and historical performance (Top 5 Ever status). Countries with a higher number of athletes perform better overall, while those in countries that have been top 5 tend to see fewer medals per athlete, possibly due to greater competition. The effect of the number of events suggests that increased competition from more events can dilute medal outcomes.")
+               )
+             )
+    ),
+    
     tabPanel("📊 Country Medal Trends",
              sidebarLayout(
                sidebarPanel(
-                 selectInput("country_select", "Choose Country:", choices = countries, selected = "USA")
+                 selectInput("country_select", "Choose Country:", choices = sort(unique(olympics$noc)), selected = "USA")
                ),
                mainPanel(
+                 h4("Medal Trend (Includes both Summer and Winter Olympics):"),
                  plotOutput("trend_plot")
                )
              )
@@ -101,6 +126,16 @@ server <- function(input, output) {
     )
     pred <- predict(model3, newdata)
     paste0("Predicted Medals: ", round(pred, 4))
+  })
+  
+  output$final_prediction <- renderText({
+    newdata <- tibble(
+      total_events_country_year = input$events,
+      total_athletes_country_year = input$athletes,
+      top_5_ever = as.numeric(input$top5)
+    )
+    pred <- predict(modeld, newdata)
+    paste0("Predicted Medals per Athlete: ", round(pred, 4))
   })
   
   output$modelformula <- renderPrint({
