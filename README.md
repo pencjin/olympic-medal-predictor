@@ -52,7 +52,7 @@ The app includes two prediction tools:
 - **Adjusted R²:** 4.189%  
 - **RMSE:** 0.621
 
--**Summary:** The factors influencing medal count of this model include the number of athletes per country, the number of events per country, and historical performance (Top 5 Ever status). Countries with a higher number of athletes perform better overall, while those in countries that have been top 5 tend to see fewer medals per athlete, possibly due to greater competition. The effect of the number of events suggests that increased competition from more events can dilute medal outcomes.
+- **Summary:** The factors influencing medal count of this model include the number of athletes per country, the number of events per country, and historical performance (Top 5 Ever status). Countries with a higher number of athletes perform better overall, while those in countries that have been top 5 tend to see fewer medals per athlete, possibly due to greater competition. The effect of the number of events suggests that increased competition from more events can dilute medal outcomes.
 
 📦 Required R Packages
 ```r
